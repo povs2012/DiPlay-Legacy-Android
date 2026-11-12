@@ -36,6 +36,10 @@ android {
         versionCode = 136
         versionName = "0.3.16"
 
+        // Car head units are ARM; the x86 ABIs are emulator-only and doubled the package.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
 
@@ -63,8 +67,14 @@ android {
         }
         release {
             optimization {
-                enable = false
+                // R8 shrinking: the unshrunk dex set was ~8.5 MB compressed; shrunk it lands near
+                // the Geely release line's ~1.1 MB. Keep rules live in proguard-rules.pro.
+                enable = true
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             signingConfig = signingConfigs.getByName("release")
         }
     }
