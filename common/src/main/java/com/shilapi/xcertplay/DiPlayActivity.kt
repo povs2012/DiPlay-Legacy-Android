@@ -97,6 +97,7 @@ internal enum class SettingsSection {
     CAR_BUTTON,
     AUDIO_ROUTING,
     LOCATION,
+    CLUSTER_MEDIA,
     CLUSTER_MAP,
     BYD_NAVIGATION,
     PERMISSIONS_AND_HELP,
@@ -124,6 +125,7 @@ internal object SettingsInformationArchitecture {
         ),
         SettingsCategory.DIAGNOSTICS to setOf(SettingsSection.DIAGNOSTICS),
         SettingsCategory.ADVANCED to setOf(
+            SettingsSection.CLUSTER_MEDIA,
             SettingsSection.CLUSTER_MAP,
             SettingsSection.EXPERIMENTAL_DISPLAY,
             SettingsSection.ADVANCED_MEDIA,
@@ -1931,6 +1933,15 @@ class DiPlayActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+        filteredSection(content, SettingsSection.CLUSTER_MEDIA,
+            getString(R.string.settings_cluster_media_metadata_title), R.drawable.ic_dp_dashboard) { card ->
+            toggle(card, getString(R.string.settings_cluster_media_metadata_title),
+                getString(R.string.settings_cluster_media_metadata_description),
+                AirPlayPersistence.loadClusterMediaMetadataEnabled(this)) {
+                AirPlayPersistence.saveClusterMediaMetadataEnabled(this, it)
+                CarPlayMediaKeys.onClusterMediaSettingChanged()
             }
         }
         if (BydOutputSettings.available(this)) filteredSection(content, SettingsSection.BYD_NAVIGATION,

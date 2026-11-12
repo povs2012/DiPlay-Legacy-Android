@@ -740,4 +740,7 @@
     <string name="wireless_forget_device_title">Бездротове підключення не вдається</string>
     <string name="wireless_forget_device_message">Бездротовий CarPlay не зміг підключитися 4 рази поспіль. На iPhone відкрийте «Параметри → Wi-Fi», забудьте точку доступу головного пристрою та виконайте сполучення заново.</string>
     <string name="settings_media_focus_exclusive_description">Запитувати постійний фокус для медіа замість приглушення CarPlay іншими програвачами. Допомагає лише на головних пристроях, які приглушують CarPlay до тиші; може заглушити інші програвачі. Діє з наступного підключення.</string>
+    <string name="settings_cluster_media_metadata_title">Медіаінформація на приладовій панелі (експериментально)</string>
+    <string name="settings_cluster_media_metadata_description">Надсилає назву пісні, виконавця та обкладинку на медіакартку приладової панелі під час відтворення музики. Застосовується одразу, не перериваючи відтворення та основний екран.</string>
+
 </resources>

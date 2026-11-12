@@ -29,6 +29,7 @@ import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.host.R
 import com.shilapi.xcertplay.hud.BydOutputSettings
 import com.shilapi.xcertplay.media.CarPlayNowPlaying
+import com.shilapi.xcertplay.instrument.XingruiInstrumentBridge
 import com.shilapi.xcertplay.orchestration.CarPlayController
 import java.util.concurrent.Executors
 import java.util.concurrent.Executor
@@ -86,6 +87,15 @@ internal object CarPlayMediaKeys {
     private val artworkCache = LinkedHashMap<Int, Bitmap?>()
     private var placeholder: Bitmap? = null
 
+    // --- Xingrui instrument cluster media card (ported from the Geely E01 line) ---
+    private var instrumentBridge: XingruiInstrumentBridge? = null
+    private data class ClusterLines(val line1: String?, val line2: String?)
+    private var lastClusterLines: ClusterLines? = null
+    private var lastGenuineTitle: String? = null
+    private var lastGenuineArtist: String? = null
+    private var lastGenuineAlbum: String? = null
+    private var lastDurationMillis: Long? = null
+
     @Synchronized
     fun attach(context: Context, next: CarPlayController) {
         if (controller !== next) {
@@ -122,6 +132,19 @@ internal object CarPlayMediaKeys {
             synchronized(this) {
                 if (controller === expected) regainFocusLocked()
             }
+        } else mainHandler.post {
+            synchronized(this) {
+                if (controller !== expected || realSdkInt() < 21 || instrumentBridge == null) return@synchronized
+                val context = appContext ?: return@synchronized
+                if (!AirPlayPersistence.loadClusterMediaMetadataEnabled(context)) return@synchronized
+                instrumentBridge?.updateMedia(
+                    lastClusterLines?.line1 ?: nowPlaying.title,
+                    lastClusterLines?.line2 ?: nowPlaying.artist,
+                    nowPlaying.album,
+                    false,
+                    shownArtworkLocked(),
+                )
+            }
         }
     }
 
@@ -130,19 +153,59 @@ internal object CarPlayMediaKeys {
         mainHandler.post {
             synchronized(this) {
                 if (controller !== expected) return@synchronized
-                val previousArtwork = artwork
-                if (nowPlaying.artworkTransferId != update.artworkTransferId) {
-                    artwork = nextArtwork(update.artworkTransferId, artworkCache, artwork)
+                val context = appContext ?: return@synchronized
+                val clusterEnabled = AirPlayPersistence.loadClusterMediaMetadataEnabled(context)
+                if (!clusterEnabled && resetLyricFilterStateLocked()) {
+                    // Setting off behaves exactly like builds before the cluster card existed;
+                    // this clears once per transition instead of at every 2 Hz tick.
+                    instrumentBridge?.clearMedia()
                 }
-                if (nowPlaying.elapsedMillis != update.elapsedMillis) elapsedUpdatedAt = SystemClock.elapsedRealtime()
-                val metadataChanged = metadataChanged(nowPlaying, update) || artwork !== previousArtwork
-                nowPlaying = update
+                var effectiveUpdate = update
+                var clusterChanged = false
+                if (clusterEnabled) {
+                    val filterResult = filterLyricMetadata(
+                        update,
+                        lastGenuineTitle,
+                        lastGenuineArtist,
+                        lastGenuineAlbum,
+                        lastDurationMillis,
+                    )
+                    lastGenuineTitle = filterResult.genuineTitle
+                    lastGenuineArtist = filterResult.genuineArtist
+                    lastGenuineAlbum = filterResult.genuineAlbum
+                    lastDurationMillis = filterResult.durationMillis
+                    val newLines = ClusterLines(filterResult.clusterLine1, filterResult.clusterLine2)
+                    clusterChanged = newLines != lastClusterLines
+                    lastClusterLines = newLines
+                    Log.d(
+                        TAG,
+                        "cluster lyrics raw title=${update.title} artist=${update.artist} album=${update.album} " +
+                            "lyric=${filterResult.isLyric} line1=${filterResult.clusterLine1} line2=${filterResult.clusterLine2}",
+                    )
+                    effectiveUpdate = filterResult.info
+                }
+                val previousArtwork = artwork
+                if (nowPlaying.artworkTransferId != effectiveUpdate.artworkTransferId) {
+                    artwork = nextArtwork(effectiveUpdate.artworkTransferId, artworkCache, artwork)
+                }
+                if (nowPlaying.elapsedMillis != effectiveUpdate.elapsedMillis) elapsedUpdatedAt = SystemClock.elapsedRealtime()
+                val metadataChangedResult = metadataChanged(nowPlaying, effectiveUpdate) || artwork !== previousArtwork
+                nowPlaying = effectiveUpdate
                 // The iPhone repeats NowPlayingUpdate about twice a second for the position alone.
                 // Republishing the metadata each time sent a copy of the artwork through system_server
                 // to every media listener, and on a DiLink 5.0 Tang that exhausted memory within
                 // minutes. The position goes in the playback state.
-                if (realSdkInt() >= 21 && metadataChanged) session?.setMetadata(androidMetadata(update, shownArtworkLocked()))
+                if (realSdkInt() >= 21 && metadataChangedResult) session?.setMetadata(androidMetadata(effectiveUpdate, shownArtworkLocked()))
                 publishPlaybackStateLocked()
+                if (clusterEnabled && realSdkInt() >= 21 && (clusterChanged || metadataChangedResult)) {
+                    clusterBridgeLocked()?.updateMedia(
+                        lastClusterLines?.line1 ?: effectiveUpdate.title,
+                        lastClusterLines?.line2 ?: effectiveUpdate.artist,
+                        effectiveUpdate.album,
+                        effectiveUpdate.playing,
+                        shownArtworkLocked(),
+                    )
+                }
             }
         }
     }
@@ -306,6 +369,9 @@ internal object CarPlayMediaKeys {
         session = null
         mediaAudioActive = false
         nowPlaying = CarPlayNowPlaying()
+        resetLyricFilterStateLocked()
+        instrumentBridge?.release()
+        instrumentBridge = null
         artwork = null
         artworkCache.clear()
         val audio = if (realSdkInt() >= Build.VERSION_CODES.M) {
@@ -434,6 +500,163 @@ internal object CarPlayMediaKeys {
             brand.contains("ecarx", ignoreCase = true)
     }
 
+    // --- Xingrui instrument cluster media card -----------------------------------------------
+    //
+    // iPhones push scrolling lyric lines disguised as rapid title/artist updates over IAP2.
+    // filterLyricMetadata recovers the genuine track from those packets and forwards clean
+    // lines to the Xingrui instrument cluster over the ECARX IPK MediaService binder.
+
+    private val LYRIC_CREDIT_PREFIXES = arrayOf(
+        "词：", "词:", "作词：", "作词:",
+        "曲：", "曲:", "作曲：", "作曲:",
+        "编曲：", "编曲:",
+        "制作：", "制作:", "制作人：", "制作人:",
+        "监制：", "监制:", "混音：", "混音:", "出品：", "出品:",
+    )
+
+    internal data class FilteredTrack(
+        val info: CarPlayNowPlaying,
+        val isLyric: Boolean,
+        val genuineTitle: String?,
+        val genuineArtist: String?,
+        val genuineAlbum: String?,
+        val durationMillis: Long?,
+        val clusterLine1: String?,
+        val clusterLine2: String?,
+    )
+
+    internal fun filterLyricMetadata(
+        info: CarPlayNowPlaying,
+        lastGenuineTitle: String?,
+        lastGenuineArtist: String?,
+        lastGenuineAlbum: String?,
+        lastDurationMillis: Long?,
+    ): FilteredTrack {
+        val rawTitle = info.title
+        val rawArtist = info.artist
+        val rawAlbum = info.album
+        val rawDuration = info.durationMillis
+
+        // 1. 还没有上一首真歌名：这包就是第一首，放行。
+        if (lastGenuineTitle.isNullOrBlank()) {
+            val genTitle = if (!rawTitle.isNullOrBlank()) rawTitle else null
+            val genArtist = if (!rawArtist.isNullOrBlank()) rawArtist else null
+            val genAlbum = if (!rawAlbum.isNullOrBlank()) rawAlbum else null
+            val genDuration = if (rawDuration != null && rawDuration > 0) rawDuration else null
+            return FilteredTrack(
+                info = info,
+                isLyric = false,
+                genuineTitle = genTitle,
+                genuineArtist = genArtist,
+                genuineAlbum = genAlbum,
+                durationMillis = genDuration,
+                clusterLine1 = info.title,
+                clusterLine2 = info.artist,
+            )
+        }
+
+        // 2. 命中下面三种之一：当成歌词。歌名、歌手、专辑、时长都保持上一首，不更新。
+        //    进度是 0、进度为空、总时长变了，也不能放行。
+        //    - 歌手等于上一首真歌名。
+        //    - 歌名以 " - " 加上一首真歌名结尾。不要用 contains。
+        //    - 歌名以制作信息前缀开头（中英文冒号均兼容）
+        val isLyricSwap = rawArtist == lastGenuineTitle
+        val isLyricSuffix = !rawTitle.isNullOrBlank() && rawTitle.endsWith(" - $lastGenuineTitle")
+        val isLyricCredit = !rawTitle.isNullOrBlank() &&
+            LYRIC_CREDIT_PREFIXES.any { rawTitle.startsWith(it) }
+
+        val isLyric = isLyricSwap || isLyricSuffix || isLyricCredit
+
+        return if (isLyric) {
+            val effTitle = lastGenuineTitle
+            val effArtist = lastGenuineArtist ?: (if (rawArtist != lastGenuineTitle) rawArtist else null)
+            val effAlbum = lastGenuineAlbum ?: rawAlbum
+            val line1 = when {
+                isLyricSuffix -> rawTitle!!.removeSuffix(" - $lastGenuineTitle").ifBlank { lastGenuineTitle }
+                else -> rawTitle?.takeIf { it.isNotBlank() } ?: lastGenuineTitle
+            }
+            val line2 = joinNonBlank(lastGenuineArtist, lastGenuineTitle, " - ") ?: lastGenuineTitle
+            FilteredTrack(
+                info = info.copy(title = effTitle, artist = effArtist, album = effAlbum),
+                isLyric = true,
+                genuineTitle = lastGenuineTitle,
+                genuineArtist = lastGenuineArtist,
+                genuineAlbum = lastGenuineAlbum,
+                durationMillis = lastDurationMillis,
+                clusterLine1 = line1,
+                clusterLine2 = line2,
+            )
+        } else {
+            // 3. 其余都是新歌，放行。包括《七里香》后面的《七里香 (Live)》、时长相同的下一首、进度停在中途、进度为空。
+            val genTitle = if (!rawTitle.isNullOrBlank()) rawTitle else lastGenuineTitle
+            val genArtist = if (!rawArtist.isNullOrBlank()) rawArtist else lastGenuineArtist
+            val genAlbum = if (!rawAlbum.isNullOrBlank()) rawAlbum else lastGenuineAlbum
+            val genDuration = if (rawDuration != null && rawDuration > 0) rawDuration else lastDurationMillis
+            FilteredTrack(
+                info = info,
+                isLyric = false,
+                genuineTitle = genTitle,
+                genuineArtist = genArtist,
+                genuineAlbum = genAlbum,
+                durationMillis = genDuration,
+                clusterLine1 = info.title,
+                clusterLine2 = info.artist,
+            )
+        }
+    }
+
+    private fun joinNonBlank(first: String?, second: String?, separator: String): String? {
+        val a = first?.trim().orEmpty()
+        val b = second?.trim().orEmpty()
+        return when {
+            a.isNotEmpty() && b.isNotEmpty() -> "$a$separator$b"
+            a.isNotEmpty() -> a
+            b.isNotEmpty() -> b
+            else -> null
+        }
+    }
+    /** Lyric-filter bookkeeping; returns true when there was anything to clear. */
+    private fun resetLyricFilterStateLocked(): Boolean {
+        val hadState = lastClusterLines != null || lastGenuineTitle != null ||
+            lastGenuineArtist != null || lastGenuineAlbum != null || lastDurationMillis != null
+        lastClusterLines = null
+        lastGenuineTitle = null
+        lastGenuineArtist = null
+        lastGenuineAlbum = null
+        lastDurationMillis = null
+        return hadState
+    }
+
+    /** Lazily binds the Xingrui IPK bridge; returns null where that stack cannot exist. */
+    private fun clusterBridgeLocked(): XingruiInstrumentBridge? {
+        if (realSdkInt() < 21) return null
+        val context = appContext ?: return null
+        if (!AirPlayPersistence.loadClusterMediaMetadataEnabled(context)) return null
+        if (instrumentBridge == null) instrumentBridge = XingruiInstrumentBridge(context)
+        return instrumentBridge
+    }
+
+    /** Settings toggled cluster media info; clear or re-send without waiting for the next tick. */
+    fun onClusterMediaSettingChanged() {
+        mainHandler.post {
+            synchronized(this) {
+                val context = appContext ?: return@synchronized
+                if (AirPlayPersistence.loadClusterMediaMetadataEnabled(context)) {
+                    if (realSdkInt() >= 21 && (nowPlaying.title != null || nowPlaying.artist != null || nowPlaying.album != null)) {
+                        clusterBridgeLocked()?.updateMedia(
+                            lastClusterLines?.line1 ?: nowPlaying.title,
+                            lastClusterLines?.line2 ?: nowPlaying.artist,
+                            nowPlaying.album,
+                            nowPlaying.playing,
+                            shownArtworkLocked(),
+                        )
+                    }
+                } else {
+                    if (resetLyricFilterStateLocked()) instrumentBridge?.clearMedia()
+                }
+            }
+        }
+    }
     /** Whether [next] changes what the media session's metadata shows; position and play state do not. */
     internal fun metadataChanged(previous: CarPlayNowPlaying, next: CarPlayNowPlaying): Boolean =
         previous.copy(elapsedMillis = null, playing = false) != next.copy(elapsedMillis = null, playing = false)

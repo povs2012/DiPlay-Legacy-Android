@@ -114,6 +114,8 @@ object AirPlayPersistence {
     private const val KEY_CLUSTER_MARKER_Y = "cluster_marker_vertical_step"
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_POSITION = "cluster_turn_card_overlay_position"
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_SIZE = "cluster_turn_card_overlay_size"
+    private const val KEY_CLUSTER_MEDIA_METADATA = "cluster_media_metadata_enabled"
+    private const val KEY_CLUSTER_MEDIA_SOURCE = "cluster_media_source"
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_X = "cluster_turn_card_overlay_x_percent"
     private const val KEY_CLUSTER_TURN_CARD_OVERLAY_Y = "cluster_turn_card_overlay_y_percent"
     private const val KEY_CENTER_MAP_FOLLOWS_DASHBOARD = "center_map_follows_dashboard"
@@ -941,6 +943,34 @@ object AirPlayPersistence {
 
     fun saveClusterMapEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_CLUSTER_MAP, enabled).apply()
+    }
+
+    /** Song title/artist/artwork for the Xingrui instrument cluster media card (Geely line). */
+    fun loadClusterMediaMetadataEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_MEDIA_METADATA, true)
+
+    fun saveClusterMediaMetadataEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_CLUSTER_MEDIA_METADATA, enabled).apply()
+    }
+
+    const val SOURCE_USB = 0
+    const val SOURCE_BLUETOOTH = 2
+    const val SOURCE_ONLINE = 6
+
+    fun loadClusterMediaSource(context: Context): Int {
+        val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val source = sp.getInt(KEY_CLUSTER_MEDIA_SOURCE, SOURCE_BLUETOOTH)
+        // 媒体卡只认 CAN 值 5。音源 2 编成 5，音源 0 编成 3，音源 6 编成 9。
+        // 旧的 0 和 6 会写到别的格子上，卡片不切过去。读到就迁回 2。
+        // 蓝牙断开时东软会丢掉音源 2，发送前由 BTAudioGuard 把 BTAudio 写成 Connected。
+        if (source != SOURCE_BLUETOOTH) {
+            sp.edit().putInt(KEY_CLUSTER_MEDIA_SOURCE, SOURCE_BLUETOOTH).apply()
+        }
+        return SOURCE_BLUETOOTH
+    }
+
+    fun saveClusterMediaSource(context: Context, source: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt(KEY_CLUSTER_MEDIA_SOURCE, source).apply()
     }
 
     /** The dashboard map as a card on the centre screen while DiPlay is in the background. */

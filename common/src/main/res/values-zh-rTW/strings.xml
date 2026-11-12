@@ -794,4 +794,7 @@
     <string name="settings_legacy_hotspot_description">在下次連線或打開 DiPlay 時，自動關閉 Wi-Fi 並開啟已儲存的車機熱點。保持熱點名稱與密碼不變。如需開機自動啟動，請同時開啟「車機啟動後打開」。在此車機上無需 ADB 授權。</string>
     <string name="settings_media_focus_exclusive">媒體音訊焦點獨佔</string>
     <string name="settings_media_focus_exclusive_description">媒體改請求永久焦點，不再讓其他播放器壓低 CarPlay。只對會把 CarPlay 壓到無聲的車機有效；可能導致其他播放器無聲。下次連接生效。</string>
+    <string name="settings_cluster_media_metadata_title">儀表板媒體資訊（實驗性）</string>
+    <string name="settings_cluster_media_metadata_description">播放音樂時將歌名、歌手與封面同步至儀表板媒體卡片。即時生效，不打斷播放與主畫面顯示。</string>
+
 </resources>

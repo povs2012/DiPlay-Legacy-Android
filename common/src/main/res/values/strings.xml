@@ -842,4 +842,7 @@
     <string name="settings_legacy_hotspot_description">On the next connection or when DiPlay opens, turn off regular Wi-Fi and start the saved car hotspot. Keep its name and password. For boot startup, also enable “Open after the car starts”. No ADB authorization is needed on this unit.</string>
     <string name="settings_media_focus_exclusive">Exclusive media audio focus</string>
     <string name="settings_media_focus_exclusive_description">Request permanent focus for media instead of letting other players duck CarPlay. Only helps head units that duck CarPlay to silence; it can mute other players. Takes effect on the next connection.</string>
+    <string name="settings_cluster_media_metadata_title">Instrument cluster media info (experimental)</string>
+    <string name="settings_cluster_media_metadata_description">Sends song title, artist and cover art to the instrument cluster media card while music plays. Applies at once without interrupting playback or the main display.</string>
+
 </resources>
